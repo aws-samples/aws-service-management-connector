@@ -1,0 +1,66 @@
+Description: AWS Service Management Connector for ServiceNow
+Parameters:
+  SecurityHubSQSName:
+    Default: AwsServiceManagementConnectorForSecurityHubQueue
+    Description: >-
+      This is the name of the SQS queue which the connector will use to pass Security hub findings to the ITSM connector.  This name must match the value in the ITSM tool connector settings. Do Not Change
+      this unless you make corresponding changes in the ITSM application setup.
+    Type: String
+  HealthDashboardSQSName:
+    Default: AwsServiceManagementConnectorForHealthDashboardQueue
+    Description: This is the name of the SQS queue which the connector will use to pass Health Dashboard events to the ITSM connector.  This name must match the value in the ITSM tool connector settings. Do Not Change this unless you make corresponding changes in the ITSM application setup.
+    Type: String
+Resources:
+  RuleLifeCycleEvents:
+    Properties:
+      Description: Send Security Hub imported findings to the AwsServiceManagementConnectorForSecurityHubQueue SQS.
+      EventPattern:
+        source:
+          - aws.securityhub
+      Targets:
+        - Arn: !Sub 'arn:aws:sqs:${AWS::Region}:${AWS::AccountId}:${SecurityHubSQSName}'
+          Id: IDRuleLifeCycleEventsSNOW
+    Type: AWS::Events::Rule
+
+  SCSnowConSecHubQueue:
+    Properties:
+      QueueName: !Ref 'SecurityHubSQSName'
+      SqsManagedSseEnabled: true
+      Tags:
+      - Key: Name
+        Value: !Ref 'SecurityHubSQSName'
+    Type: AWS::SQS::Queue
+
+  SQSPolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - !Ref 'SCSnowConSecHubQueue'
+      PolicyDocument:
+        Statement:
+          - Action: SQS:SendMessage
+            Effect: Allow
+            Resource: !GetAtt 'SCSnowConSecHubQueue.Arn'
+            Principal:
+              Service: events.amazonaws.com
+            Condition:
+              ArnEquals:
+                aws:SourceArn: !GetAtt 'RuleLifeCycleEvents.Arn'
+
+  SCSnowHealthDashQueue:
+    Type: 'AWS::SQS::Queue'
+    Properties:
+        QueueName: !Ref HealthDashboardSQSName
+        SqsManagedSseEnabled: true
+        Tags:
+        - Key: Name
+          Value: !Ref HealthDashboardSQSName
+        RedrivePolicy:
+          deadLetterTargetArn: !GetAtt SCSnowHealthDashDeadLetterQueue.Arn
+          maxReceiveCount: 5
+        VisibilityTimeout: 3600
+  SCSnowHealthDashDeadLetterQueue:
+    Type: 'AWS::SQS::Queue'
+    Properties:
+        SqsManagedSseEnabled: true
+        QueueName: !Sub '${HealthDashboardSQSName}-DLQ'

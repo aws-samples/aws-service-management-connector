@@ -1,0 +1,205 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Template to deploy the resources required to configure the service now connector
+
+Parameters:
+  LambdaFunctionName:
+    Description: Name for the Lambda function custom Resource
+    Type: String
+    Default: service-now-integration
+  AssumeRoleName:
+    Description: Role ARN on the Management account
+    Type: String
+    Default: "service-now-lambda-assume-role"
+  S3CodeBucket:
+    Type: String
+    Description: Name of the bucket that stores the source code zip
+  S3CodeBucketKey:
+    Type: String
+    Description: Key name of the zip artifact
+    Default: snowregister-v1.zip
+  VpcId:
+    Description: Name of and existing VPC
+    Type: "AWS::EC2::VPC::Id"
+    ConstraintDescription: Must be a valid VPC.
+  SubnetIdList:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: CSV list of subnet ids
+  ManagementAccountId:
+    Type: String
+    Description: AWS Organization Mangement account number.
+  OrganizationID:
+    Type: String
+    Description: AWS Organization ID
+
+Resources:
+  LambdaIamPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub "${LambdaFunctionName}-policy"
+      Roles:
+        - !Ref LambdaIamRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - "logs:CreateLogGroup"
+              - "logs:CreateLogStream"
+              - "logs:PutLogEvents"
+            Resource: "arn:aws:logs:*:*:*"
+
+          - Effect: Allow
+            Action:
+              - ssm:GetParameter
+              - ssm:GetParameters
+              - ssm:GetParametersByPath
+            Resource: !Sub "arn:aws:ssm:*:${AWS::AccountId}:parameter/*"
+
+          - Effect: Allow
+            Action:
+              - organizations:DescribeAccount
+            Resource: !Sub "arn:aws:organizations::${ManagementAccountId}:account/*/*"
+
+          - Effect: Allow
+            Action:
+              - ec2:CreateNetworkInterface
+              - ec2:DeleteNetworkInterface
+              - ec2:AssignPrivateIpAddresses
+              - ec2:UnassignPrivateIpAddresses
+            Resource: !Sub "arn:aws:ec2:*:${AWS::AccountId}:*/*"
+
+          - Effect: Allow
+            Action:
+              - ec2:DescribeNetworkInterfaces
+            Resource: "*"
+
+          - Effect: Allow
+            Action:
+              - secretsmanager:CreateSecret
+              - secretsmanager:TagResource
+              - secretsmanager:GetSecret
+              - secretsmanager:GetSecret
+              - secretsmanager:DeleteSecret
+            Resource: !Sub "arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:*"
+
+          - Effect: Allow
+            Action:
+              - secretsmanager:ListSecrets
+            Resource: "*"
+
+  LambdaIamAssumePolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub "${LambdaFunctionName}-assume-policy"
+      Roles:
+        - !Ref LambdaIamRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - "sts:AssumeRole"
+            Resource: !Sub "arn:aws:iam::${ManagementAccountId}:role/${AssumeRoleName}"
+
+  LambdaIamRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${LambdaFunctionName}-role"
+      Path: /
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: "sts:AssumeRole"
+
+  LambdaFunction:
+    DependsOn: LambdaIamPolicy
+    Type: AWS::Lambda::Function
+    Properties:
+      Description: Custom resource lambda to create or update a new account in Servie now
+      FunctionName: !Ref LambdaFunctionName
+      Handler: lambda_function.handler
+      MemorySize: 128
+      Role: !GetAtt LambdaIamRole.Arn
+      Runtime: python3.9
+      Code:
+        S3Bucket: !Ref S3CodeBucket
+        S3Key: !Ref S3CodeBucketKey
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+        SubnetIds: !Ref SubnetIdList
+      ReservedConcurrentExecutions: 100
+      KmsKeyArn: !GetAtt SecretsKmsKey.Arn
+      Timeout: 60
+      Environment:
+        Variables:
+          SECRETS_KMS_KEY: !GetAtt SecretsKmsKey.Arn
+          DELEGATED_ADMIN_ASSUME_ROLE_NAME: !Ref AssumeRoleName
+          DELEGATED_ADMIN_ASSUME_ROLE_ACC_ID: !Ref ManagementAccountId
+
+  SecretsKmsKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: "Built for Self Service with Service Catalog encrypt and decrypt pipeline artifacts and other data"
+      Enabled: true
+      EnableKeyRotation: True
+      KeyPolicy:
+        Version: "2012-10-17"
+        Id: "key-default-1"
+        Statement:
+          - Sid: "Enable IAM User Permissions"
+            Effect: "Allow"
+            Principal:
+              AWS:
+                - !Sub "arn:aws:iam::${AWS::AccountId}:root"
+            Action: "kms:*"
+            Resource: "*"
+          - Effect: Allow
+            Action:
+              - "kms:Encrypt"
+              - "kms:Decrypt"
+              - "kms:ReEncrypt*"
+              - "kms:GenerateDataKey*"
+              - "kms:DescribeKey"
+            Principal:
+              AWS:
+                - !GetAtt LambdaIamRole.Arn
+            Resource: "*"
+
+  LambdaInvokePolicy:
+    DependsOn: LambdaFunction
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref LambdaFunctionName
+      Principal: "*"
+      PrincipalOrgID: !Ref OrganizationID
+
+  LambdaSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for the lambda function to allow outbound traffic
+      VpcId: !Ref VpcId
+
+  LambdaSecurityGpOutbound:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      Description: "Allow All outbound traffic from lambda"
+      GroupId: !Ref LambdaSecurityGroup
+      IpProtocol: "-1"
+      CidrIp: 0.0.0.0/0 # Replace this with Actual IP of the service now based on the customer needs
+
+Outputs:
+  LambdaArn:
+    Description: Lambda Funciton ARN
+    Value: !GetAtt LambdaFunction.Arn
+    Export:
+      Name: snow-lambda-arn
+  LambdaIamArn:
+    Description: Lambda execution role ARN
+    Value: !GetAtt LambdaIamRole.Arn
+    Export:
+      Name: snow-lambda-exec-role-arn

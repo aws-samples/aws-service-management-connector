@@ -1,0 +1,241 @@
+Description: AWS Service Management Connector for ServiceNow
+Parameters:
+  ServiceNowUrl:
+    Type: String
+    Description: Service Now instance url ex. d-xxxxx.service-now.com
+  LambdaArn:
+    Type: String
+    Description: Service now customr resource Lambda function arn
+  KeyVersion:
+    Type: String
+    Description: Increment the key version to update the
+  SecurityHubSQSName:
+    Default: AwsServiceManagementConnectorForSecurityHubQueue
+    Description: >-
+      This is the name of the SQS queue which the connector will use to pass Security hub findings to the ITSM connector.  This name must match the value in the ITSM tool connector settings. Do Not Change
+      this unless you make corresponding changes in the ITSM application setup.
+    Type: String
+  HealthDashboardSQSName:
+        Default: AwsServiceManagementConnectorForHealthDashboardQueue
+        Description: This is the name of the SQS queue which the connector will use to pass Health Dashboard events to the ITSM connector.  This name must match the value in the ITSM tool connector settings. Do Not Change this unless you make corresponding changes in the ITSM application setup.
+        Type: String
+  SCEndUserName:
+    Type: String
+    Default: SCEndUser
+    Description: IAM User name for Service Catalog End User
+  SCSyncUserName:
+    Type: String
+    Default: SCSyncUser
+    Description: IAM User name for Service Now Sync User
+
+Resources:
+  SCEndUserGroup:
+    Type: AWS::IAM::Group
+    Properties:
+      GroupName: SC-End-User-Group
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonEC2ReadOnlyAccess
+        - arn:aws:iam::aws:policy/AmazonS3ReadOnlyAccess
+        - arn:aws:iam::aws:policy/AWSConfigUserAccess
+        - arn:aws:iam::aws:policy/AWSServiceCatalogEndUserFullAccess
+      Policies:
+        - PolicyDocument:
+            Statement:
+              - Action:
+                  - ssm:DescribeAutomationExecutions
+                  - ssm:DescribeDocument
+                  - ssm:StartAutomationExecution
+                  - ssm:StartChangeRequestExecution
+                Effect: Allow
+                Resource: '*'
+              - Effect: Allow
+                Action: iam:PassRole
+                Resource: '*'
+                Condition:
+                  StringEquals:
+                    iam:PassedToService: ssm.amazonaws.com
+            Version: '2012-10-17'
+          PolicyName: SSMExecutionPolicy
+        - PolicyDocument:
+            Statement:
+              - Action:
+                  - ssm:CreateOpsItem
+                  - ssm:GetOpsItem
+                  - ssm:UpdateOpsItem
+                  - ssm:DescribeOpsItems
+                Effect: Allow
+                Resource: '*'
+            Version: '2012-10-17'
+          PolicyName: OpsCenterExecutionPolicy
+
+  SCSyncUserGroup:
+    Type: AWS::IAM::Group
+    Properties:
+      GroupName: SC-Sync-User-Group
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AWSServiceCatalogAdminReadOnlyAccess
+        - arn:aws:iam::aws:policy/AmazonSSMReadOnlyAccess
+        - arn:aws:iam::aws:policy/AWSConfigUserAccess
+        - arn:aws:iam::aws:policy/AWSSupportAccess
+      Policies:
+        - PolicyDocument:
+            Statement:
+              - Action:
+                  - ssm:CreateOpsItem
+                  - ssm:GetOpsItem
+                  - ssm:UpdateOpsItem
+                  - ssm:DescribeOpsItems
+                Effect: Allow
+                Resource: '*'
+            Version: '2012-10-17'
+          PolicyName: OpsCenterActionPolicy
+        - PolicyDocument:
+            Statement:
+              - Action:
+                  - support:DescribeAttachment
+                  - support:DescribeCommunications
+                  - support:AddAttachmentsToSet
+                  - support:AddCommunicationToCase
+                  - support:CreateCase
+                  - support:ResolveCase
+                  - support:DescribeCases
+                  - support:DescribeServices
+                Effect: Allow
+                Resource: '*'
+            Version: '2012-10-17'
+          PolicyName: AWSSupportBaselineAccessPolicy
+        - PolicyDocument:
+            Statement:
+              - Action:
+                  - budgets:ViewBudget
+                Effect: Allow
+                Resource: '*'
+            Version: '2012-10-17'
+          PolicyName: SSMActionPolicy
+        - PolicyDocument:
+            Statement:
+              - Action:
+                  - cloudformation:RegisterType
+                  - cloudformation:DescribeTypeRegistration
+                  - cloudformation:DeregisterType
+                  - config:PutResourceConfig
+                Effect: Allow
+                Resource: '*'
+            Version: '2012-10-17'
+          PolicyName: ConfigBiDirectionalPolicy
+        - PolicyDocument:
+            Statement:
+              - Action:
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                Effect: Allow
+                Resource:
+                  - !Sub "arn:aws:sqs:*:${AWS::AccountId}:${SecurityHubSQSName}"
+                  - !Sub "arn:aws:sqs:*:${AWS::AccountId}:${HealthDashboardSQSName}"
+              - Action:
+                  - securityhub:BatchUpdateFindings
+                Effect: Allow
+                Resource: '*'
+            Version: '2012-10-17'
+          PolicyName: SecurityHubPolicy
+        - PolicyDocument:
+            Statement:
+                -
+                    Action:
+                        - 'cloudtrail:DescribeQuery'
+                        - 'cloudtrail:ListEventDataStores'
+                        - 'cloudtrail:StartQuery'
+                        - 'cloudtrail:GetQueryResults'
+                    Effect: Allow
+                    Resource: '*'
+            Version: '2012-10-17'
+          PolicyName: ChangeMangerCloudtrail
+        - PolicyDocument:
+            Statement:
+                -
+                    Action:
+                        - 'ssm-incidents:ListIncidentRecords'
+                        - 'ssm-incidents:GetIncidentRecord'
+                        - 'ssm-incidents:UpdateRelatedItems'
+                        - 'ssm-incidents:ListTimelineEvents'
+                        - 'ssm-incidents:GetTimelineEvent'
+                        - 'ssm-incidents:UpdateIncidentRecord'
+                        - 'ssm:ListOpsItemRelatedItems'
+                    Effect: Allow
+                    Resource: '*'
+            Version: '2012-10-17'
+          PolicyName: AWSIncidentBaselineAccessPolicy
+
+  SCEndUser:
+    Properties:
+      UserName: !Ref SCEndUserName
+    Type: AWS::IAM::User
+
+  SCEndUserGrouAssociation:
+    Type: AWS::IAM::UserToGroupAddition
+    Properties:
+      GroupName: !Ref SCEndUserGroup
+      Users:
+        - !Ref SCEndUser
+
+  SCSyncUser:
+    Properties:
+      UserName: !Ref SCSyncUserName
+    Type: AWS::IAM::User
+
+  SCSyncUserGrouAssociation:
+    Type: AWS::IAM::UserToGroupAddition
+    Properties:
+      GroupName: !Ref SCSyncUserGroup
+      Users:
+        - !Ref SCSyncUser
+
+  SCEndUserAccessKeys:
+    DependsOn: SCEndUser
+    Properties:
+      Serial: !Ref KeyVersion
+      Status: Active
+      UserName: !Ref SCEndUserName
+    Type: AWS::IAM::AccessKey
+
+  SCSyncUserAccessKeys:
+    DependsOn: SCSyncUser
+    Properties:
+      Serial: !Ref KeyVersion
+      Status: Active
+      UserName: !Ref SCSyncUserName
+    Type: AWS::IAM::AccessKey
+
+  RegisterSerNow:
+    Type: Custom::ServiceNowReg
+    Properties:
+      ServiceToken: !Ref LambdaArn
+      Region: !Ref "AWS::Region"
+      AccountId: !Ref AWS::AccountId
+      KeyVersion: !Ref KeyVersion
+      ServiceNowUrl: !Ref ServiceNowUrl
+      SyncUserName: !Ref SCSyncUserName
+      EndUserName: !Ref SCEndUserName
+      SCEndUser:
+        UserName: !Ref SCEndUserName
+        AccessKey: !Ref 'SCEndUserAccessKeys'
+        SecretAccessKey: !GetAtt 'SCEndUserAccessKeys.SecretAccessKey'
+      SCSyncUser:
+        UserName: !Ref SCSyncUserName
+        AccessKey: !Ref 'SCSyncUserAccessKeys'
+        SecretAccessKey: !GetAtt 'SCSyncUserAccessKeys.SecretAccessKey'
+      EnableSystemsManager: False    # Enable/disable AWS Systems Manager integration
+      EnableChangeManager: False    # Enable/Disable AWS System Manager Change Manager integration
+      EnableOpsCenter: False        # Enable/Disable AWS OpsCenter integration
+      EnableServiceCatalog: False    # Enable/Disable Service Catalog Integration
+      EnableConfig: False            # Enable/Disable Config Integration
+      EnableAwsSupport: False        # Enable/Disable AWS Support Integration
+      EnableSecurityHub: False       # Enable/Disable Security Hub Integration
+      EnableHealthDashboard: False  # Enable/Disable Health Dashboard Integration
+      EnableIncidentManager: False  # Enable/Disable incident Manager Integration
+      EnableRegions:                # List of regions to set in the service now account
+        - us-east-1
+      Tags:
+        - Key: App_Name
+          Value: Service_Now_connector
+      StoreKeys: False              # Enable this flag to backup the AWS Access key and secret keys in secrets manager

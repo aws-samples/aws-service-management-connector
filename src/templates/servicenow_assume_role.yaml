@@ -1,0 +1,39 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Template to deploy an IAM role that will be assumed by the Service now connector lambda
+
+Parameters:
+  SourceRoleArn:
+    Description: Lambda IAM role arn from shared services account
+    Type: String
+  ManagementAccountId:
+    Description: Organizations Management Account number
+    Type: String
+
+Resources:
+  LambdaAssumeIamRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: "service-now-lambda-assume-role"
+      Path: /
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            AWS: !Sub "${SourceRoleArn}"
+          Action: 'sts:AssumeRole'
+      Policies:
+      - PolicyName: AccountReadAccess
+        PolicyDocument:
+          Version: 2012-10-17
+          Statement:
+          - Effect: Allow
+            Action:
+            - organizations:DescribeAccount
+            Resource: !Sub 'arn:aws:organizations::${ManagementAccountId}:account/*/*'
+Outputs:
+  RoleArn:
+    Description: Information about the value
+    Value: !GetAtt  LambdaAssumeIamRole.Arn
+    Export:
+      Name: snow-lambda-assume-role-arn

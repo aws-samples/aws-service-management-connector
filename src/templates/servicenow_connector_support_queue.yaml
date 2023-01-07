@@ -1,0 +1,71 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Template to deploy a SQS Queue for AWS Suppot tickets
+Parameters:
+  SupportSQSName:
+    Default: AwsServiceManagementConnectorForSupportQueue
+    Description: This is the name of the SQS queue which the connector will use to pass AWS Support incidents to the ITSM connector.  This name must match the value in the ITSM tool connector settings. Do Not Change this unless you make corresponding changes in the ITSM application setup.
+    Type: String
+  SyncUserName:
+    Default: SCSyncUser
+    Description: IAM Sync User name
+    Type: String
+
+Resources:
+  AWSSupportEventsRule:
+    Type: 'AWS::Events::Rule'
+    Properties:
+      Description: Send AWS Support Case events to the AwsServiceManagementConnectorForSupportQueue SQS.
+      EventPattern:
+        source:
+          - aws.support
+      Targets:
+      - Arn: !GetAtt AwsServiceManagementConnectorSupportQueue.Arn
+        Id: IDAWSSupportEventsRule
+  AwsServiceManagementConnectorSupportQueue:
+    Type: 'AWS::SQS::Queue'
+    Properties:
+      SqsManagedSseEnabled: true
+      QueueName: !Ref SupportSQSName
+      Tags:
+      - Key: Name
+        Value: !Ref SupportSQSName
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt SMCSupportDeadLetterQueue.Arn
+        maxReceiveCount: 5
+      VisibilityTimeout: 3600
+  SMCSupportDeadLetterQueue:
+    Type: 'AWS::SQS::Queue'
+    Properties:
+      QueueName: !Sub '${SupportSQSName}-DLQ'
+      SqsManagedSseEnabled: true
+  SQSPolicy:
+    Type: 'AWS::SQS::QueuePolicy'
+    Properties:
+      Queues:
+        - !Ref AwsServiceManagementConnectorSupportQueue
+      PolicyDocument:
+        Statement:
+        -
+          Action: 'SQS:SendMessage'
+          Effect: Allow
+          Resource: !GetAtt AwsServiceManagementConnectorSupportQueue.Arn
+          Principal:
+            Service: events.amazonaws.com
+          Condition:
+            ArnEquals:
+              aws:SourceArn: !GetAtt AWSSupportEventsRule.Arn
+  SQSPermissions:
+    Type: 'AWS::IAM::Policy'
+    Properties:
+      PolicyName: SupportSQSPolicy
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Action:
+            - 'sqs:ReceiveMessage'
+            - 'sqs:DeleteMessage'
+            Effect: Allow
+            Resource:
+              - !GetAtt AwsServiceManagementConnectorSupportQueue.Arn
+      Users:
+      - !Ref SyncUserName
